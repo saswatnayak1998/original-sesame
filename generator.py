@@ -177,28 +177,20 @@
 
 
 
-
-
 from dataclasses import dataclass
 from typing import List, Tuple
 import torch
 import torchaudio
 from huggingface_hub import hf_hub_download
-from models import Model
-from moshi.models import loaders
 from transformers import AutoTokenizer, MimiModel, AutoFeatureExtractor
-
-from tokenizers.processors import TemplateProcessing
-from transformers import AutoTokenizer
+from models import Model
 from watermarking import CSM_1B_GH_WATERMARK, load_watermarker, watermark
-
 
 @dataclass
 class Segment:
     speaker: int
     text: str
-    # (num_samples,), sample_rate = 24_000
-    audio: torch.Tensor
+    audio: torch.Tensor  # (num_samples,), sample_rate = 24_000
 
 
 class Generator:
@@ -206,10 +198,11 @@ class Generator:
         self.device = device
         self._model = model.to(device, dtype=torch.float16 if device == "cuda" else torch.bfloat16)
 
+        # Ensure model has `reset_caches()` method
         if not hasattr(self._model, "reset_caches"):
             raise AttributeError("The loaded model is missing `reset_caches()`. Ensure your model class implements this.")
 
-        self._model = torch.compile(self._model)  # 🔹 Compile model for optimized execution
+        self._model = torch.compile(self._model)  # Optimize model execution
 
         self._text_tokenizer = self._load_tokenizer()
         self._audio_tokenizer, self._feature_extractor = self._load_audio_tokenizer()
@@ -232,25 +225,27 @@ class Generator:
     def encode_audio(self, audio: torch.Tensor) -> torch.Tensor:
         """Encode raw audio into compressed representation."""
         inputs = self._feature_extractor(raw_audio=audio.cpu(), sampling_rate=self.sample_rate, return_tensors="pt").to(self.device)
-        return self._audio_tokenizer.encode(inputs["input_values"])
+        return self._audio_tokenizer.encode(inputs["input_values"]).audio_codes
 
     def decode_audio(self, encoded_audio: torch.Tensor) -> torch.Tensor:
         """Decode compressed audio back into waveform."""
-        return self._audio_tokenizer.decode(encoded_audio.audio_codes)[0]
+        return self._audio_tokenizer.decode(encoded_audio)[0]
 
-    @torch.inference_mode()  # 🔹 Disables gradients for speed
+    @torch.inference_mode()  # Disable gradients for faster inference
     def generate(self, text: str, speaker: int, context: List[Segment], max_audio_length_ms: int = 10000, temperature: float = 0.7, topk: int = 40) -> torch.Tensor:
+        """Generate speech from text."""
+        
         if not hasattr(self._model, "reset_caches"):
             raise AttributeError("The model does not have `reset_caches()`. Ensure it's implemented correctly.")
 
-        self._model.reset_caches()  # ✅ Check that this function exists in the model.
+        self._model.reset_caches()  # Reset caches before generating
 
         max_audio_frames = int(max_audio_length_ms / 80)
         samples = []
 
         with torch.amp.autocast(device_type="cuda", dtype=torch.float16 if self.device == "cuda" else torch.bfloat16):
             for _ in range(max_audio_frames):
-                sample = self._model.generate_frame(text, speaker, context, temperature, topk)
+                sample = self._model.generate_frame()  # Ensure `generate_frame()` receives the correct params
                 if torch.all(sample == 0): 
                     break
                 samples.append(sample)
@@ -259,7 +254,7 @@ class Generator:
             encoded_audio = torch.stack(samples).permute(1, 2, 0)
             audio = self.decode_audio(encoded_audio).squeeze()
 
-        # 🔹 Apply Imperceptible Watermark (Optional)
+        # Apply Imperceptible Watermark (Optional)
         audio, wm_sample_rate = watermark(self._watermarker, audio, self.sample_rate, CSM_1B_GH_WATERMARK)
         return torchaudio.functional.resample(audio, orig_freq=wm_sample_rate, new_freq=self.sample_rate)
 
@@ -271,5 +266,5 @@ def load_csm_1b(device="cuda"):
     if not hasattr(model, "reset_caches"):
         raise AttributeError("The loaded model is missing `reset_caches()`. Ensure your model class implements this.")
 
-    model = torch.compile(model)  # 🔹 Optimize execution
+    model = torch.compile(model)  # Optimize execution
     return Generator(model, device=device)
