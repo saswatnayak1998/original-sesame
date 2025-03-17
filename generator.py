@@ -225,7 +225,7 @@ class Generator:
         self.device = next(model.parameters()).device
 
         # Load audio tokenizer and watermarker
-        mimi_weight = hf_hub_download("sesame/csm-1b", "mimi.pt")
+        mimi_weight = hf_hub_download(loaders.DEFAULT_REPO, loaders.MIMI_NAME)
         self._audio_tokenizer = torch.jit.load(mimi_weight).to(self.device)
         self._watermarker = load_watermarker(device=self.device)
         self.sample_rate = 24000  # Set explicitly for consistency
