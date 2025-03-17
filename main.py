@@ -34,8 +34,26 @@ else:
 
 logging.info(f"Using device: {device}")
 
+MODEL_PATH = "ckpt.pt"
+
+# Download model if not present
+if not os.path.exists(MODEL_PATH):
+    logging.info("Downloading model file...")
+    model_path = hf_hub_download(
+        repo_id="sesame/csm-1b",
+        filename="ckpt.pt",
+        local_dir=".",  
+        local_dir_use_symlinks=False,
+    )
+else:
+    model_path = MODEL_PATH
+    logging.info("Model file already exists. Skipping download.")
+
 # Load CSM-1B generator
-generator = load_csm_1b(device=device)
+
+
+generator = load_csm_1b(model_path, device)
+logging.info("Model loaded successfully.")
 logging.info("Model loaded successfully.")
 
 # Example speaker embeddings
