@@ -53,7 +53,7 @@ else:
 # Load CSM-1B generator
 
 
-generator = load_csm_1b(device)
+generator = load_csm_1b(model_path)
 logging.info("Model loaded successfully.")
 logging.info("Model loaded successfully.")
 
