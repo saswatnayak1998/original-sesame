@@ -46,8 +46,8 @@ transcripts = [
 
 ]
 audio_paths = [
-    "utterance_0.wav",
-    "utterance_1.wav",
+    "audio_files/utterance_0.wav",
+    "audio_files/utterance_1.wav",
 
 ]
 
