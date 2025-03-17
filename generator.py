@@ -181,7 +181,6 @@
 
 from dataclasses import dataclass
 from typing import List, Tuple
-
 import torch
 import torchaudio
 from huggingface_hub import hf_hub_download
@@ -200,49 +199,37 @@ class Segment:
     audio: torch.Tensor
 
 
-def load_llama3_tokenizer():
-    """
-    https://github.com/huggingface/transformers/issues/22794#issuecomment-2092623992
-    """
-    tokenizer_name = "meta-llama/Llama-3.2-1B"
-    tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
-    bos = tokenizer.bos_token
-    eos = tokenizer.eos_token
-    tokenizer._tokenizer.post_processor = TemplateProcessing(
-        single=f"{bos}:0 $A:0 {eos}:0",
-        pair=f"{bos}:0 $A:0 {eos}:0 {bos}:1 $B:1 {eos}:1",
-        special_tokens=[(f"{bos}", tokenizer.bos_token_id), (f"{eos}", tokenizer.eos_token_id)],
-    )
-
-    return tokenizer
-
-
 class Generator:
-    def __init__(self, model: Model):
-        self._model = model
-        self._model.setup_caches(1)
-        self._text_tokenizer = self._load_tokenizer()
-        self.device = next(model.parameters()).device
+    def __init__(self, model: Model, device="cuda"):
+        self.device = device
+        self._model = model.to(device, dtype=torch.float16 if device == "cuda" else torch.bfloat16)
+        self._model = torch.compile(self._model)  # 🔹 Compile model for optimized execution
 
-        # Load audio tokenizer and watermarker
-        mimi_weight = hf_hub_download(loaders.DEFAULT_REPO, loaders.MIMI_NAME)
-        self._audio_tokenizer = torch.jit.load(mimi_weight).to(self.device)
+        self._text_tokenizer = self._load_tokenizer()
+        self._audio_tokenizer = self._load_audio_tokenizer()
         self._watermarker = load_watermarker(device=self.device)
-        self.sample_rate = 24000  # Set explicitly for consistency
+
+        self.sample_rate = 24000  # Set explicitly
 
     def _load_tokenizer(self):
+        """Load and configure LLaMA3 tokenizer."""
         tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-3.2-1B")
         tokenizer._tokenizer.post_processor = None  # Remove unnecessary processing
         return tokenizer
 
-    @torch.inference_mode()
-    def generate(self, text, speaker, context, max_audio_length_ms=10000, temperature=0.7, topk=40):
-        self._model.reset_caches()
+    def _load_audio_tokenizer(self):
+        """Download and load pre-trained audio tokenizer."""
+        mimi_weight = hf_hub_download(repo_id="sesame/csm-1b", filename="mimi.pt", local_dir="/workspace/original-sesame/")
+        return torch.jit.load(mimi_weight).to(self.device)
 
-        # 🔹 Use Mixed Precision FP16/BF16 for Faster Inference
+    @torch.inference_mode()  # 🔹 Disables gradients for speed
+    def generate(self, text: str, speaker: int, context: List[Segment], max_audio_length_ms: int = 10000, temperature: float = 0.7, topk: int = 40) -> torch.Tensor:
+        self._model.reset_caches()
+        max_audio_frames = int(max_audio_length_ms / 80)
+
+        samples = []
         with torch.amp.autocast(device_type="cuda", dtype=torch.float16 if self.device == "cuda" else torch.bfloat16):
-            samples = []
-            for _ in range(int(max_audio_length_ms / 80)):  
+            for _ in range(max_audio_frames):
                 sample = self._model.generate_frame(text, speaker, context, temperature, topk)
                 if torch.all(sample == 0): break
                 samples.append(sample)
@@ -251,10 +238,11 @@ class Generator:
 
         # 🔹 Apply Imperceptible Watermark (Optional)
         audio, wm_sample_rate = watermark(self._watermarker, audio, self.sample_rate, CSM_1B_GH_WATERMARK)
-        audio = torchaudio.functional.resample(audio, orig_freq=wm_sample_rate, new_freq=self.sample_rate)
-        
-        return audio
+        return torchaudio.functional.resample(audio, orig_freq=wm_sample_rate, new_freq=self.sample_rate)
+
 
 def load_csm_1b(device="cuda"):
-    model = Model.from_pretrained("sesame/csm-1b").to(device=device, dtype=torch.float16)
-    return Generator(model)
+    """Load and optimize model for fast inference."""
+    model = Model.from_pretrained("sesame/csm-1b")
+    model = torch.compile(model)  # 🔹 Optimize execution
+    return Generator(model, device=device)
