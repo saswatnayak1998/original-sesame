@@ -144,8 +144,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from huggingface_hub import hf_hub_download
 from generator import load_csm_1b, Segment
 
+# Initialize FastAPI app
 app = FastAPI()
 
+# Enable CORS (Allow all origins)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -154,20 +156,22 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Set logging
 logging.basicConfig(level=logging.INFO)
 
 # 🔹 Enable cuDNN Benchmarking for Speedup
 torch.backends.cudnn.benchmark = True
 
+# 🔹 Choose Device
 device = "cuda" if torch.cuda.is_available() else "cpu"
 logging.info(f"Using device: {device}")
 
-# 🔹 Load Optimized Model
-logging.info("Loading optimized model with TensorRT...")
+# 🔹 Load CSM-1B model once at startup
+logging.info("Loading model...")
 generator = load_csm_1b(device=device)
-logging.info("Optimized model loaded successfully.")
+logging.info("Model loaded successfully.")
 
-# 🔹 Pre-load Reference Audio Segments
+# 🔹 Pre-load Reference Audio Segments (Avoids reprocessing on each request)
 speakers = [0, 1, 0, 0]
 transcripts = [
     "Hey, how are you doing?",
@@ -179,6 +183,7 @@ audio_paths = [
     "audio_files/utterance_1.wav",
 ]
 
+# 🔹 Load and Resample Audio Efficiently
 def load_audio(audio_path):
     audio_tensor, sample_rate = torchaudio.load(audio_path)
     audio_tensor = torchaudio.functional.resample(
@@ -191,6 +196,7 @@ segments = [
     for transcript, speaker, audio_path in zip(transcripts, speakers, audio_paths)
 ]
 
+# 🔹 FastAPI Endpoint for Generating Speech
 @app.post("/generate_audio", summary="Generate speech from text")
 async def generate_audio(text: str = Query(..., description="Text to convert into speech")):
     if not text:
@@ -201,7 +207,7 @@ async def generate_audio(text: str = Query(..., description="Text to convert int
     logging.info(f"Generating audio for: '{text}'")
 
     # 🔹 Use FP16 for Faster Computation
-    with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
+    with torch.amp.autocast(device_type="cuda", dtype=torch.float16 if device == "cuda" else torch.bfloat16):
         audio = generator.generate(
             text=text,
             speaker=1,
@@ -216,10 +222,11 @@ async def generate_audio(text: str = Query(..., description="Text to convert int
     generation_time = time.time() - start_time
     logging.info(f"Audio generated in {generation_time:.2f} seconds")
 
+    # 🔹 Streaming Response for Audio
     def iter_audio():
         with open(temp_audio.name, "rb") as f:
             yield from f
-        os.remove(temp_audio.name)
+        os.remove(temp_audio.name)  # Cleanup
 
     return StreamingResponse(
         iter_audio(),

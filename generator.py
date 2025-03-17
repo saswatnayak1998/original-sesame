@@ -173,7 +173,6 @@
 
 import torch
 import torchaudio
-import torch_tensorrt
 from huggingface_hub import hf_hub_download
 from models import Model
 from transformers import AutoTokenizer
@@ -186,9 +185,6 @@ class Generator:
         self._text_tokenizer = self._load_tokenizer()
         self.device = next(model.parameters()).device
 
-        # 🔹 Enable TensorRT Optimization
-        self._optimize_model()
-
         # Load audio tokenizer and watermarker
         mimi_weight = hf_hub_download("sesame/csm-1b", "mimi.pt")
         self._audio_tokenizer = torch.jit.load(mimi_weight).to(self.device)
@@ -200,29 +196,14 @@ class Generator:
         tokenizer._tokenizer.post_processor = None  # Remove unnecessary processing
         return tokenizer
 
-    def _optimize_model(self):
-        """Applies TensorRT + Torch Compile optimizations."""
-        if self.device == "cuda":
-            # 🔹 Convert model to TensorRT
-            self._model = torch_tensorrt.compile(
-                self._model,
-                inputs=[torch_tensorrt.Input((1, 2048, 33), dtype=torch.float16)],
-                enabled_precisions={torch.float16},  # Use FP16 for speed
-                workspace_size=1 << 30,  # 1GB workspace
-                truncate_long_and_double=True
-            )
-
-            # 🔹 Apply `torch.compile()` to optimize execution
-            self._model = torch.compile(self._model, mode="reduce-overhead", backend="inductor")
-
     @torch.inference_mode()
     def generate(self, text, speaker, context, max_audio_length_ms=10000, temperature=0.7, topk=40):
         self._model.reset_caches()
-        max_audio_frames = int(max_audio_length_ms / 80)
 
-        with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
+        # 🔹 Use Mixed Precision FP16/BF16 for Faster Inference
+        with torch.amp.autocast(device_type="cuda", dtype=torch.float16 if self.device == "cuda" else torch.bfloat16):
             samples = []
-            for _ in range(max_audio_frames):
+            for _ in range(int(max_audio_length_ms / 80)):  
                 sample = self._model.generate_frame(text, speaker, context, temperature, topk)
                 if torch.all(sample == 0): break
                 samples.append(sample)
