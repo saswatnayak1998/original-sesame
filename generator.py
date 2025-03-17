@@ -205,6 +205,10 @@ class Generator:
     def __init__(self, model: Model, device="cuda"):
         self.device = device
         self._model = model.to(device, dtype=torch.float16 if device == "cuda" else torch.bfloat16)
+
+        if not hasattr(self._model, "reset_caches"):
+            raise AttributeError("The loaded model is missing `reset_caches()`. Ensure your model class implements this.")
+
         self._model = torch.compile(self._model)  # 🔹 Compile model for optimized execution
 
         self._text_tokenizer = self._load_tokenizer()
@@ -236,10 +240,14 @@ class Generator:
 
     @torch.inference_mode()  # 🔹 Disables gradients for speed
     def generate(self, text: str, speaker: int, context: List[Segment], max_audio_length_ms: int = 10000, temperature: float = 0.7, topk: int = 40) -> torch.Tensor:
-        self._model.reset_caches()
-        max_audio_frames = int(max_audio_length_ms / 80)
+        if not hasattr(self._model, "reset_caches"):
+            raise AttributeError("The model does not have `reset_caches()`. Ensure it's implemented correctly.")
 
+        self._model.reset_caches()  # ✅ Check that this function exists in the model.
+
+        max_audio_frames = int(max_audio_length_ms / 80)
         samples = []
+
         with torch.amp.autocast(device_type="cuda", dtype=torch.float16 if self.device == "cuda" else torch.bfloat16):
             for _ in range(max_audio_frames):
                 sample = self._model.generate_frame(text, speaker, context, temperature, topk)
@@ -259,5 +267,9 @@ class Generator:
 def load_csm_1b(device="cuda"):
     """Load and optimize model for fast inference."""
     model = Model.from_pretrained("sesame/csm-1b")
+
+    if not hasattr(model, "reset_caches"):
+        raise AttributeError("The loaded model is missing `reset_caches()`. Ensure your model class implements this.")
+
     model = torch.compile(model)  # 🔹 Optimize execution
     return Generator(model, device=device)
