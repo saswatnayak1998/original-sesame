@@ -6,6 +6,7 @@ import tempfile
 import logging
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import StreamingResponse
+from huggingface_hub import hf_hub_download
 from fastapi.middleware.cors import CORSMiddleware
 from generator import load_csm_1b, Segment
 
