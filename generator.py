@@ -171,12 +171,51 @@
 #     return generator
 
 
+
+
+
+
+
+
+
+
+from dataclasses import dataclass
+from typing import List, Tuple
+
 import torch
 import torchaudio
 from huggingface_hub import hf_hub_download
 from models import Model
+from moshi.models import loaders
+from tokenizers.processors import TemplateProcessing
 from transformers import AutoTokenizer
 from watermarking import CSM_1B_GH_WATERMARK, load_watermarker, watermark
+
+
+@dataclass
+class Segment:
+    speaker: int
+    text: str
+    # (num_samples,), sample_rate = 24_000
+    audio: torch.Tensor
+
+
+def load_llama3_tokenizer():
+    """
+    https://github.com/huggingface/transformers/issues/22794#issuecomment-2092623992
+    """
+    tokenizer_name = "meta-llama/Llama-3.2-1B"
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+    bos = tokenizer.bos_token
+    eos = tokenizer.eos_token
+    tokenizer._tokenizer.post_processor = TemplateProcessing(
+        single=f"{bos}:0 $A:0 {eos}:0",
+        pair=f"{bos}:0 $A:0 {eos}:0 {bos}:1 $B:1 {eos}:1",
+        special_tokens=[(f"{bos}", tokenizer.bos_token_id), (f"{eos}", tokenizer.eos_token_id)],
+    )
+
+    return tokenizer
+
 
 class Generator:
     def __init__(self, model: Model):
