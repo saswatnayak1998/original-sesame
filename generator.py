@@ -186,6 +186,8 @@ import torchaudio
 from huggingface_hub import hf_hub_download
 from models import Model
 from moshi.models import loaders
+from transformers import AutoTokenizer, MimiModel, AutoFeatureExtractor
+
 from tokenizers.processors import TemplateProcessing
 from transformers import AutoTokenizer
 from watermarking import CSM_1B_GH_WATERMARK, load_watermarker, watermark
@@ -206,10 +208,10 @@ class Generator:
         self._model = torch.compile(self._model)  # 🔹 Compile model for optimized execution
 
         self._text_tokenizer = self._load_tokenizer()
-        self._audio_tokenizer = self._load_audio_tokenizer()
+        self._audio_tokenizer, self._feature_extractor = self._load_audio_tokenizer()
         self._watermarker = load_watermarker(device=self.device)
 
-        self.sample_rate = 24000  # Set explicitly
+        self.sample_rate = self._feature_extractor.sampling_rate  # Use Mimi’s sample rate
 
     def _load_tokenizer(self):
         """Load and configure LLaMA3 tokenizer."""
@@ -218,9 +220,19 @@ class Generator:
         return tokenizer
 
     def _load_audio_tokenizer(self):
-        """Download and load pre-trained audio tokenizer."""
-        mimi_weight = hf_hub_download(repo_id="sesame/csm-1b", filename="mimi.pt", local_dir="/workspace/original-sesame/")
-        return torch.jit.load(mimi_weight).to(self.device)
+        """Load pre-trained Mimi model for encoding/decoding audio."""
+        model = MimiModel.from_pretrained("kyutai/mimi").to(self.device)
+        feature_extractor = AutoFeatureExtractor.from_pretrained("kyutai/mimi")
+        return model, feature_extractor
+
+    def encode_audio(self, audio: torch.Tensor) -> torch.Tensor:
+        """Encode raw audio into compressed representation."""
+        inputs = self._feature_extractor(raw_audio=audio.cpu(), sampling_rate=self.sample_rate, return_tensors="pt").to(self.device)
+        return self._audio_tokenizer.encode(inputs["input_values"])
+
+    def decode_audio(self, encoded_audio: torch.Tensor) -> torch.Tensor:
+        """Decode compressed audio back into waveform."""
+        return self._audio_tokenizer.decode(encoded_audio.audio_codes)[0]
 
     @torch.inference_mode()  # 🔹 Disables gradients for speed
     def generate(self, text: str, speaker: int, context: List[Segment], max_audio_length_ms: int = 10000, temperature: float = 0.7, topk: int = 40) -> torch.Tensor:
@@ -231,10 +243,13 @@ class Generator:
         with torch.amp.autocast(device_type="cuda", dtype=torch.float16 if self.device == "cuda" else torch.bfloat16):
             for _ in range(max_audio_frames):
                 sample = self._model.generate_frame(text, speaker, context, temperature, topk)
-                if torch.all(sample == 0): break
+                if torch.all(sample == 0): 
+                    break
                 samples.append(sample)
 
-            audio = self._audio_tokenizer.decode(torch.stack(samples).permute(1, 2, 0)).squeeze()
+            # Decode audio tokens to waveform
+            encoded_audio = torch.stack(samples).permute(1, 2, 0)
+            audio = self.decode_audio(encoded_audio).squeeze()
 
         # 🔹 Apply Imperceptible Watermark (Optional)
         audio, wm_sample_rate = watermark(self._watermarker, audio, self.sample_rate, CSM_1B_GH_WATERMARK)
