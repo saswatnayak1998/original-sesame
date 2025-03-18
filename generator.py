@@ -1,5 +1,8 @@
 from dataclasses import dataclass
 from typing import List, Tuple
+import torch
+from bitsandbytes import nn as bnb
+from models import Model, ModelArgs 
 
 import torch
 import torchaudio
@@ -9,6 +12,8 @@ from moshi.models import loaders
 from tokenizers.processors import TemplateProcessing
 from transformers import AutoTokenizer
 from watermarking import CSM_1B_GH_WATERMARK, load_watermarker, watermark
+from transformers import BitsAndBytesConfig
+
 
 
 @dataclass
@@ -163,9 +168,38 @@ class Generator:
         return audio
 
 
+
 def load_csm_1b(device: str = "cuda") -> Generator:
-    model = Model.from_pretrained("sesame/csm-1b")
-    model.to(device=device, dtype=torch.bfloat16)
-    model.decoder = torch.compile(model.decoder, fullgraph=True, backend='cudagraphs')
+    """
+    Load the CSM-1B model with 8-bit quantization manually (since Model does not support from_pretrained).
+    """
+
+    # Define model arguments (manually set values from `ModelArgs`)
+    model_args = ModelArgs(
+        backbone_flavor="llama-1B",
+        decoder_flavor="llama-1B",
+        text_vocab_size=128_256,
+        audio_vocab_size=128_256,
+        audio_num_codebooks=32,
+    )
+
+    # Manually initialize the model (instead of using `from_pretrained`)
+    model = Model(model_args)
+
+    # Move model to device
+    model.to(device)
+
+    # Apply 8-bit quantization manually
+    for name, param in model.named_parameters():
+        param.data = param.data.to(torch.float16)  # Convert to FP16 first
+        if param.dim() > 1:  # Only quantize weight matrices
+            param = bnb.nn.Int8Params(param.data, requires_grad=False)
+
+    # Optimize the decoder for CUDA (skip if using MPS)
+    if device == "cuda":
+        model.decoder = torch.compile(model.decoder, fullgraph=True, backend="cudagraphs")
+
     generator = Generator(model)
+    
+    print("✅ Model loaded with 8-bit quantization on:", device)
     return generator
