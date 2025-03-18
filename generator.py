@@ -169,10 +169,3 @@ def load_csm_1b(device: str = "cuda") -> Generator:
     model.decoder = torch.compile(model.decoder, fullgraph=True, backend='cudagraphs')
     generator = Generator(model)
     return generator
-
-
-
-
-
-
-

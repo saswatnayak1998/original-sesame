@@ -55,7 +55,6 @@ else:
 
 generator = load_csm_1b(device)
 logging.info("Model loaded successfully.")
-logging.info("Model loaded successfully.")
 
 # Example speaker embeddings
 speakers = [0, 1, 0, 0]
